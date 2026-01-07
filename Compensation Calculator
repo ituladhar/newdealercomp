@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compensation Calculator - Jan 2026</title>
+    
+    <!-- 1. External Libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- 2. Fonts & Styles -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+    <style>
+      :root {
+          --metro-magenta: #E2007A;
+          --metro-magenta-light: #fdf2f8;
+      }
+      .font-montserrat { font-family: 'Montserrat', sans-serif; }
+      .table-cell-border { border-left: 1px solid #e5e7eb; border-right: 1px solid #e5e7eb; }
+      
+      /* Brand Colors */
+      .text-magenta { color: var(--metro-magenta); }
+      .border-magenta { border-color: var(--metro-magenta); }
+      .bg-magenta { background-color: var(--metro-magenta); } 
+      .bg-magenta-light { background-color: var(--metro-magenta-light); }
+      
+      /* Progress Bar Stripe Animation */
+      @keyframes progress-bar-stripes {
+        0% { background-position: 1rem 0; }
+        100% { background-position: 0 0; }
+      }
+
+      .progress-bar-striped {
+        background-image: linear-gradient(45deg,rgba(255,255,255,.15) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.15) 50%,rgba(255,255,255,.15) 75%,transparent 75%,transparent);
+        background-size: 1rem 1rem;
+        animation: progress-bar-stripes 1s linear infinite;
+      }
+
+      /* Toggle Switch Styles */
+      .toggle-checkbox:checked {
+        right: 0;
+        border-color: #E2007A;
+      }
+      .toggle-checkbox:checked + .toggle-label {
+        background-color: #E2007A;
+      }
+
+      /* Remove number input spinners */
+      .no-spinners::-webkit-inner-spin-button, 
+      .no-spinners::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+      .no-spinners { -moz-appearance: textfield; }
+    </style>
+</head>
+<body class="bg-zinc-100 text-zinc-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo } = React;
+
+        // --- ICON COMPONENT ---
+        const LucideIcon = ({ name, className = '' }) => {
+          const iconData = lucide[name];
+          if (!iconData) return null;
+          const paths = iconData.map(([tag, props]) => {
+            const attrs = Object.entries(props).map(([k, v]) => `${k}="${v}"`).join(' ');
+            return `<${tag} ${attrs} />`;
+          }).join('');
+          return <span dangerouslySetInnerHTML={{ __html: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${className}">${paths}</svg>` }} />;
+        };
+
+        const formatCurrency = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
+        const displayPercentage = (val) => (val * 100).toFixed(1).replace(/\.0$/, '');
+
+        // --- MAIN APP COMPONENT ---
+        const App = () => {
+          // --- 1. STATE ---
+          const [viewMode, setViewMode] = useState('simple'); // 'simple' or 'guideline'
+          const [storeAddress, setStoreAddress] = useState('123 Metro Way');
+          const [exitTraffic, setExitTraffic] = useState(2565);
+          const [isHighCostMarket, setIsHighCostMarket] = useState(false); // Page 12 Rule
+          
+          // Metrics State
+          const [metrics, setMetrics] = useState([
+            { name: "Phone Act", key: "phoneAct", targetRate: 0.050, actualRate: 0.034, mrc: 55, includeInTotal: true, type: 'activation' },
+            { name: "BTS Act (Excl HSI)", key: "btsAct", targetRate: 0.025, actualRate: 0.027, mrc: 20, includeInTotal: true, type: 'activation' },
+            { name: "HSI Conversion", key: "hsi", targetRate: 0.010, actualRate: 0.005, mrc: 55, includeInTotal: true, type: 'activation' },
+            // New Upgrade Metrics for Guideline Mode
+            { name: "Handset Upgrade", key: "upgrade", targetRate: 0.0, actualRate: 0.015, mrc: 60, includeInTotal: true, type: 'upgrade' }, 
+            { name: "Upgrade Residual (>365 Days)", key: "residual", targetRate: 0.0, actualRate: 0.010, mrc: 60, includeInTotal: true, type: 'residual' },
+            
+            { name: "Gross Prepaid Act", key: "grossPrepaid", targetRate: 0.085, actualRate: 0.066, mrc: 0, includeInTotal: false, type: 'aggregator' },
+          ]);
+
+          // January 2026 Bonus State
+          const [targetActivations, setTargetActivations] = useState(100);
+          const [retentionRate, setRetentionRate] = useState(58.0); // 95-Day Retention
+          const [csatScore, setCsatScore] = useState(9.0);
+          const [mysteryShopScore, setMysteryShopScore] = useState(100);
+          const [auditScore, setAuditScore] = useState(100);
+
+          // --- 2. HANDLERS ---
+          const handleMetricChange = (index, field, value) => {
+             const newMetrics = [...metrics];
+             newMetrics[index][field] = (field.includes('Rate')) ? parseFloat(value) / 100 : parseFloat(value);
+             setMetrics(newMetrics);
+          };
+
+          // --- 3. CALCULATIONS ---
+          const results = useMemo(() => {
+            let totalActualActivations = 0;
+            let totalEstimatedComp = 0;
+            let totalPotentialComp = 0;
+            let totalRetentionPotential = 0; // For Guideline Mode
+            
+            // Specific accumulators for Gross Prepaid Act
+            let grossPrepaidComp = 0;
+            let grossPrepaidRetention = 0;
+
+            // Commission Calculation
+            const computedMetrics = metrics.map(m => {
+                const traffic = exitTraffic || 0;
+                
+                // --- GROSS PREPAID LOGIC (Aggregator) ---
+                if (m.key === 'grossPrepaid') {
+                     // Use the specific accumulators for Gross Prepaid
+                     const actualActs = totalActualActivations; // Only activations counted in this var
+                     const actualRate = traffic > 0 ? actualActs / traffic : 0;
+                     const targetRate = m.targetRate; 
+                     
+                     // Use the filtered sums
+                     const estComp = grossPrepaidComp;
+                     const retentionComp = grossPrepaidRetention;
+                     
+                     return { ...m, actualActs, actualRate, targetRate, estComp, retentionComp, potComp: 0 };
+                }
+
+                // --- STANDARD METRIC LOGIC ---
+                // For upgrades, the "Rate" is % of traffic performing that action
+                const actualActs = (m.actualRate || 0) * traffic;
+                const targetActs = (m.targetRate || 0) * traffic;
+                
+                let estComp = 0;
+                let retentionComp = 0;
+                let potComp = 0;
+
+                if (viewMode === 'simple') {
+                    // Simple Mode: User enters flat commission amount in 'mrc'
+                    estComp = actualActs * m.mrc;
+                    potComp = targetActs * m.mrc;
+                } else {
+                    // Guideline Mode: 'mrc' is Plan Price
+                    
+                    if (m.type === 'activation') {
+                        // Page 3: Activation = 35% of MRC
+                        const marketSpiff = isHighCostMarket ? 3.00 : 0;
+                        const upfrontRate = 0.35;
+                        const upfrontPayout = (m.mrc * upfrontRate) + marketSpiff;
+                        
+                        estComp = actualActs * upfrontPayout;
+                        
+                        // Page 3 Retention: 265% total over 12 months
+                        const retentionRateTotal = 2.65; 
+                        retentionComp = actualActs * (m.mrc * retentionRateTotal);
+                        
+                        potComp = targetActs * (upfrontPayout + (m.mrc * retentionRateTotal));
+                    
+                    } else if (m.type === 'upgrade') {
+                        // Page 3: Initial Upgrade = 100% of MRC
+                        const upfrontPayout = m.mrc * 1.00;
+                        estComp = actualActs * upfrontPayout;
+                        retentionComp = 0; // No retention on initial upgrade itself, residuals handled separately
+                        potComp = targetActs * upfrontPayout;
+
+                    } else if (m.type === 'residual') {
+                        // Page 3: Upgrade Residual = 3% of MRC for 23 months
+                        // This applies to customers > 365 days tenure
+                        const upfrontPayout = 0; // It's a residual, starts Day 35
+                        const residualTotalRate = 0.03 * 23; // 69% total
+                        
+                        estComp = 0; // No upfront
+                        retentionComp = actualActs * (m.mrc * residualTotalRate);
+                        potComp = targetActs * (m.mrc * residualTotalRate);
+                    }
+                }
+
+                if (m.includeInTotal) {
+                    // Accumulate totals
+                    totalEstimatedComp += estComp;
+                    totalRetentionPotential += retentionComp;
+                    totalPotentialComp += potComp;
+
+                    // Activation Specific Accumulators
+                    if (m.type === 'activation') {
+                        totalActualActivations += actualActs;
+                        // Accumulate payout dollars specifically for Gross Prepaid row
+                        grossPrepaidComp += estComp;
+                        grossPrepaidRetention += retentionComp;
+                    }
+                }
+
+                return { ...m, actualActs, targetActs, estComp, retentionComp, potComp };
+            });
+
+            // Performance Bonus Logic (Jan 2026 Guidelines)
+            // Page 7 Rules
+            const minActsRequired = 40; 
+            const minRetentionRequired = 57.0;
+            
+            const attainmentPct = targetActivations > 0 ? (totalActualActivations / targetActivations) : 0;
+            
+            // Check Gatekeepers
+            const actsMet = totalActualActivations >= minActsRequired;
+            const retentionMet = retentionRate >= minRetentionRequired;
+
+            let baseBonus = 0;
+            let targetSpiff = 0;
+            let bonusEligibilityStatus = "Ineligible"; 
+
+            // Logic Tree based on Page 7 Tables
+            if (actsMet) {
+                if (retentionMet) {
+                    bonusEligibilityStatus = "Eligible";
+                    if (attainmentPct >= 0.75) {
+                        const clampedAttainment = Math.min(attainmentPct, 1.25);
+                        baseBonus = clampedAttainment * 1875.00;
+                    }
+                    if (attainmentPct >= 1.05) {
+                        const acceleratorCap = 1.25; 
+                        const effectivePct = Math.min(attainmentPct, acceleratorCap);
+                        const units = Math.floor((effectivePct - 1.0001) / 0.05); 
+                        if (units > 0) targetSpiff = units * 250;
+                    }
+                } else {
+                    bonusEligibilityStatus = "Partial"; 
+                    if (attainmentPct >= 1.00) {
+                        baseBonus = 937.50;
+                    } else if (attainmentPct >= 0.75) {
+                        baseBonus = 703.12;
+                    }
+                }
+            } 
+
+            // Deductions
+            let qaDeductions = 0;
+            if (csatScore < 8.3) qaDeductions += 300;
+            if (mysteryShopScore < 70) qaDeductions += 300;
+            if (auditScore < 70) qaDeductions += 300;
+
+            const rawNetBonus = (baseBonus + targetSpiff) - qaDeductions;
+            
+            // IF IN GUIDELINE MODE, BONUS IS EXCLUDED (as requested)
+            const netBonus = viewMode === 'guideline' ? 0 : rawNetBonus;
+            
+            // For badge logic
+            const isEligible = bonusEligibilityStatus !== "Ineligible";
+            const displayEligible = isEligible && rawNetBonus !== 0;
+
+            return {
+                computedMetrics,
+                totalActualActivations,
+                totalEstimatedComp,
+                totalRetentionPotential,
+                totalPotentialComp,
+                bonus: {
+                    status: bonusEligibilityStatus,
+                    displayEligible,
+                    attainmentPct,
+                    baseBonus,
+                    targetSpiff,
+                    qaDeductions,
+                    netBonus: netBonus, 
+                    rawNetBonus: rawNetBonus 
+                }
+            };
+          }, [metrics, exitTraffic, targetActivations, retentionRate, csatScore, mysteryShopScore, auditScore, viewMode, isHighCostMarket]);
+
+
+          // --- 4. RENDER ---
+          return (
+            <div className="min-h-screen p-4 md:p-8 font-sans bg-zinc-100 text-zinc-800">
+              <div className="max-w-7xl mx-auto">
+                
+                {/* HEADER & TOGGLE */}
+                <header className="text-center mb-8 relative">
+                  <h1 className="text-4xl md:text-5xl font-black text-magenta font-montserrat uppercase tracking-tight">
+                    Compensation Calculator
+                  </h1>
+                  <p className="mt-3 text-zinc-500 font-medium text-sm italic mb-6">
+                    Track and forecast dealer commission based on exit traffic and conversion targets.
+                  </p>
+
+                  {/* MODE TOGGLE */}
+                  <div className="inline-flex bg-white p-1 rounded-full border border-zinc-200 shadow-sm">
+                    <button 
+                        onClick={() => setViewMode('simple')}
+                        className={`px-6 py-2 rounded-full text-sm font-bold transition-all ${viewMode === 'simple' ? 'bg-magenta text-white shadow-md' : 'text-zinc-500 hover:bg-zinc-50'}`}
+                    >
+                        Current Month
+                    </button>
+                    <button 
+                        onClick={() => setViewMode('guideline')}
+                        className={`px-6 py-2 rounded-full text-sm font-bold transition-all ${viewMode === 'guideline' ? 'bg-magenta text-white shadow-md' : 'text-zinc-500 hover:bg-zinc-50'}`}
+                    >
+                        Deferred Earnings
+                    </button>
+                  </div>
+                </header>
+
+                {/* TOP SUMMARY CARDS */}
+                <div className={`grid grid-cols-1 ${viewMode === 'guideline' ? 'md:grid-cols-3' : 'md:grid-cols-4'} gap-6 mb-8`}>
+                    {/* Est Comp */}
+                    <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-emerald-500">
+                        <div className="flex justify-between items-center mb-2">
+                            <span className="text-xs font-bold text-zinc-500 uppercase">
+                                {viewMode === 'simple' ? 'Total Estimated Payout' : 'Est. Upfront Payout'}
+                            </span>
+                            <LucideIcon name="DollarSign" className="w-5 h-5 text-emerald-500" />
+                        </div>
+                        <div className="text-3xl font-black text-zinc-800">
+                            {/* In Guideline mode, bonus is already 0 in results.bonus.netBonus */}
+                            {formatCurrency(results.totalEstimatedComp + results.bonus.netBonus)}
+                        </div>
+                        <p className="text-xs text-zinc-400 mt-1">
+                            {viewMode === 'simple' ? 'Commission + Net Bonus' : 'Activation + Upgrades + Spiffs'}
+                        </p>
+                    </div>
+
+                    {/* Retention Potential (Only in Guideline Mode) */}
+                    {viewMode === 'guideline' && (
+                        <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-blue-500">
+                            <div className="flex justify-between items-center mb-2">
+                                <span className="text-xs font-bold text-zinc-500 uppercase">Deferred Retention</span>
+                                <LucideIcon name="PiggyBank" className="w-5 h-5 text-blue-500" />
+                            </div>
+                            <div className="text-3xl font-black text-zinc-800">
+                                {formatCurrency(results.totalRetentionPotential)}
+                            </div>
+                            <p className="text-xs text-zinc-400 mt-1">12-Mo Retention & Residuals</p>
+                        </div>
+                    )}
+
+                    {/* Bonus Specific (Hidden in Guideline Mode) */}
+                    {viewMode === 'simple' && (
+                        <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-amber-400">
+                             <div className="flex justify-between items-center mb-2">
+                                <span className="text-xs font-bold text-zinc-500 uppercase">Performance Bonus</span>
+                                <LucideIcon name="Trophy" className="w-5 h-5 text-amber-500" />
+                            </div>
+                            <div className={`text-3xl font-black ${results.bonus.rawNetBonus < 0 ? 'text-red-500' : 'text-zinc-800'}`}>
+                                {formatCurrency(results.bonus.rawNetBonus)}
+                            </div>
+                            <p className="text-xs text-zinc-400 mt-1">
+                                {results.bonus.displayEligible 
+                                    ? `Eligible (${(results.bonus.attainmentPct * 100).toFixed(1)}% Attainment)` 
+                                    : "Eligibility Requirements Not Met"}
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Gap */}
+                    <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-magenta">
+                         <div className="flex justify-between items-center mb-2">
+                            <span className="text-xs font-bold text-zinc-500 uppercase">Potential Gap</span>
+                            <LucideIcon name="Target" className="w-5 h-5 text-magenta" />
+                        </div>
+                        <div className="text-3xl font-black text-zinc-800">
+                            {/* Simplified Gap logic */}
+                            {formatCurrency(Math.max(0, (results.totalPotentialComp || 0) - ((results.totalEstimatedComp || 0) + (results.totalRetentionPotential || 0))))}
+                        </div>
+                        <p className="text-xs text-zinc-400 mt-1">Missed Commission Opportunity</p>
+                    </div>
+                </div>
+
+                {/* MAIN CONTENT GRID */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                    
+                    {/* LEFT COLUMN: INPUTS & METRICS */}
+                    <div className={`${viewMode === 'guideline' ? 'lg:col-span-12' : 'lg:col-span-8'} space-y-8`}>
+                        
+                        {/* Traffic & Store Input */}
+                        <div className="bg-white rounded-xl shadow-md p-4">
+                            <h3 className="text-sm font-bold text-zinc-400 uppercase mb-2 tracking-wider">Store Information</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-zinc-700 mb-1">Exit Traffic</label>
+                                    <input 
+                                        type="number" 
+                                        value={exitTraffic} 
+                                        onChange={(e) => setExitTraffic(parseFloat(e.target.value))}
+                                        className="w-full border-zinc-300 rounded-lg p-2 font-bold text-zinc-800 bg-zinc-50 focus:ring-2 focus:ring-pink-500 outline-none" 
+                                    />
+                                </div>
+                                <div>
+                                    <div className="flex justify-between">
+                                        <label className="block text-xs font-bold text-zinc-700 mb-1">Store Address</label>
+                                        {viewMode === 'guideline' && (
+                                            <div className="flex items-center">
+                                                <input 
+                                                    type="checkbox" 
+                                                    id="highCost"
+                                                    checked={isHighCostMarket}
+                                                    onChange={(e) => setIsHighCostMarket(e.target.checked)}
+                                                    className="mr-2 rounded text-magenta focus:ring-magenta"
+                                                />
+                                                <label htmlFor="highCost" className="text-[10px] text-zinc-500 cursor-pointer select-none">High Cost Mkt (+$3)</label>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <input 
+                                        type="text" 
+                                        value={storeAddress} 
+                                        onChange={(e) => setStoreAddress(e.target.value)}
+                                        className="w-full border-zinc-300 rounded-lg p-2 font-bold text-zinc-800 bg-zinc-50 focus:ring-2 focus:ring-pink-500 outline-none" 
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Commission Table */}
+                        <div className="bg-white rounded-xl shadow-md overflow-hidden">
+                             <div className="px-6 py-4 border-b border-zinc-100 bg-zinc-50/50 flex justify-between items-center">
+                                <h3 className="text-sm font-bold text-magenta uppercase tracking-wider">
+                                    {viewMode === 'simple' ? 'Standard Commission' : 'Guideline Commission Breakdown'}
+                                </h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="text-xs text-zinc-500 uppercase bg-zinc-50 border-b">
+                                        <tr>
+                                            <th className="px-4 py-3">Metric</th>
+                                            <th className="px-2 py-3 text-center">Current Act%</th>
+                                            <th className="px-2 py-3 text-center">Est. Acts</th>
+                                            {viewMode === 'simple' ? (
+                                                <>
+                                                    <th className="px-2 py-3 text-center">Market Target%</th>
+                                                    <th className="px-2 py-3 text-center">MRC ($)</th>
+                                                    <th className="px-4 py-3 text-right">Payout</th>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <th className="px-2 py-3 text-center">Avg Plan ($)</th>
+                                                    <th className="px-2 py-3 text-center text-emerald-600">Upfront (35%)</th>
+                                                    <th className="px-2 py-3 text-center text-blue-600">Deferred (265%)</th>
+                                                    <th className="px-4 py-3 text-right">Total Value</th>
+                                                </>
+                                            )}
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-zinc-100">
+                                        {results.computedMetrics.map((m, i) => {
+                                            // Hide upgrades in simple mode if you want to keep it simple, 
+                                            // or show them. Let's hide them in simple mode to keep it "Simple".
+                                            if (viewMode === 'simple' && (m.type === 'upgrade' || m.type === 'residual')) return null;
+
+                                            const isGrossPrepaidComp = ['phoneAct', 'btsAct', 'hsi'].includes(m.key);
+                                            const rowBgClass = m.key === 'grossPrepaid'
+                                                ? "bg-magenta-light border-t-2 border-zinc-200 font-semibold"
+                                                : (viewMode === 'guideline' && isGrossPrepaidComp)
+                                                    ? "bg-fuchsia-50/50"
+                                                    : "hover:bg-zinc-50";
+
+                                            return (
+                                            <tr key={m.key} className={rowBgClass}>
+                                                <td className="px-4 py-3 font-medium text-zinc-800">
+                                                    {m.name}
+                                                    {m.type === 'residual' && <span className="block text-[9px] text-zinc-400 font-normal">Max 23 Months</span>}
+                                                </td>
+                                                <td className="px-2 py-3 text-center">
+                                                    <input 
+                                                        type="number" step="0.1" 
+                                                        disabled={m.key === 'grossPrepaid'}
+                                                        value={displayPercentage(m.actualRate)}
+                                                        onChange={(e) => handleMetricChange(i, 'actualRate', e.target.value)}
+                                                        className={`w-16 text-center bg-transparent outline-none font-bold text-zinc-700 ${
+                                                            m.key === 'grossPrepaid' ? 'border-none text-zinc-500 cursor-not-allowed' : 'border-b border-zinc-300 focus:border-magenta'
+                                                        }`}
+                                                    />
+                                                </td>
+
+                                                {/* Est. Acts */}
+                                                <td className="px-2 py-3 text-center font-bold text-zinc-700">
+                                                    {Math.round(m.actualActs)}
+                                                </td>
+
+                                                {viewMode === 'simple' ? (
+                                                    // SIMPLE MODE COLUMNS
+                                                    <>
+                                                        <td className="px-2 py-3 text-center">
+                                                             <input 
+                                                                type="number" step="0.1" 
+                                                                disabled={m.key === 'grossPrepaid'}
+                                                                value={displayPercentage(m.targetRate)}
+                                                                onChange={(e) => handleMetricChange(i, 'targetRate', e.target.value)}
+                                                                className={`w-16 text-center bg-transparent outline-none font-bold text-zinc-700 ${
+                                                                    m.key === 'grossPrepaid' ? 'border-none text-zinc-500 cursor-not-allowed' : 'border-b border-zinc-300 focus:border-magenta'
+                                                                }`}
+                                                            />
+                                                        </td>
+                                                        <td className="px-2 py-3 text-center">
+                                                            {m.key === 'grossPrepaid' ? <span className="text-zinc-400">-</span> : (
+                                                                <input 
+                                                                    type="number" 
+                                                                    value={m.mrc}
+                                                                    onChange={(e) => handleMetricChange(i, 'mrc', e.target.value)}
+                                                                    className="w-12 text-center bg-transparent border-b border-zinc-300 focus:border-magenta outline-none text-zinc-600"
+                                                                />
+                                                            )}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-bold text-emerald-600">
+                                                            {formatCurrency(m.estComp)}
+                                                        </td>
+                                                    </>
+                                                ) : (
+                                                    // GUIDELINE MODE COLUMNS
+                                                    <>
+                                                        <td className="px-2 py-3 text-center">
+                                                            {m.key === 'grossPrepaid' || m.type === 'residual' ? <span className="text-zinc-400">-</span> : (
+                                                                <input 
+                                                                    type="number" 
+                                                                    value={m.mrc}
+                                                                    onChange={(e) => handleMetricChange(i, 'mrc', e.target.value)}
+                                                                    className="w-12 text-center bg-transparent border-b border-zinc-300 focus:border-magenta outline-none text-zinc-600"
+                                                                />
+                                                            )}
+                                                        </td>
+                                                        <td className="px-2 py-3 text-center text-emerald-600 font-medium">
+                                                            {formatCurrency(m.estComp)}
+                                                        </td>
+                                                        <td className="px-2 py-3 text-center text-blue-600 font-medium">
+                                                            {formatCurrency(m.retentionComp)}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-black text-zinc-800">
+                                                            {formatCurrency(m.estComp + m.retentionComp)}
+                                                        </td>
+                                                    </>
+                                                )}
+                                            </tr>
+                                        )})}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    {/* RIGHT COLUMN: PERFORMANCE BONUS (Only in Simple Mode) */}
+                    {viewMode === 'simple' && (
+                        <div className="lg:col-span-4 space-y-6">
+                            
+                            {/* Bonus Logic Container */}
+                            <div className="bg-zinc-900 text-white rounded-xl shadow-xl overflow-hidden">
+                                <div className="p-6 bg-gradient-to-r from-pink-600 to-purple-700">
+                                    <div className="flex items-center space-x-2 mb-1">
+                                        <LucideIcon name="Award" className="w-5 h-5 text-white" />
+                                        <h3 className="font-bold uppercase tracking-wider text-sm">Performance Bonus</h3>
+                                    </div>
+                                    <div className="flex justify-between items-end mt-4">
+                                        <div>
+                                            <p className="text-xs text-pink-200 uppercase font-bold">Net Bonus</p>
+                                            <p className={`text-3xl font-black ${results.bonus.rawNetBonus < 0 ? 'text-red-400' : ''}`}>
+                                                {formatCurrency(results.bonus.rawNetBonus)}
+                                            </p>
+                                        </div>
+                                        <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase 
+                                            ${results.bonus.displayEligible 
+                                                ? (results.bonus.status === 'Partial' ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50') 
+                                                : 'bg-red-500/20 text-red-300 border-red-500/50'
+                                            } border`}>
+                                            {results.bonus.displayEligible ? (results.bonus.status === 'Partial' ? 'Partially Eligible' : 'Eligible') : 'Ineligible'}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="p-6 space-y-6">
+                                    
+                                    {/* 1. Gatekeepers */}
+                                    <div>
+                                        <h4 className="text-[10px] font-bold text-zinc-500 uppercase mb-3">1. Eligibility Gates</h4>
+                                        <div className="space-y-3">
+                                            <div className="flex justify-between items-center text-sm">
+                                                <span className="text-zinc-400">Net Activations (Min 40)</span>
+                                                <span className={`font-bold ${results.totalActualActivations >= 40 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                    {Math.round(results.totalActualActivations)}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between items-center text-sm">
+                                                <span className="text-zinc-400">95-Day Retention (Min 57%)</span>
+                                                <div className="flex items-center space-x-2">
+                                                    <input 
+                                                        type="number" 
+                                                        value={retentionRate}
+                                                        onChange={(e) => setRetentionRate(parseFloat(e.target.value))}
+                                                        className="w-16 bg-zinc-800 border border-zinc-700 rounded p-1 text-center font-bold text-white text-xs"
+                                                    />
+                                                    <span className={retentionRate >= 57 ? 'text-emerald-400' : 'text-amber-400'}>
+                                                        {retentionRate >= 57 ? '✓' : (results.totalActualActivations >= 40 ? '⚠' : '✗')}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            {results.bonus.status === 'Partial' && (
+                                                <p className="text-[10px] text-amber-400 italic">
+                                                    *Retention &lt; 57% triggers reduced payout tier.
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* 2. Targets */}
+                                    <div>
+                                        <h4 className="text-[10px] font-bold text-zinc-500 uppercase mb-3">2. Performance Targets</h4>
+                                        <div className="bg-zinc-800 p-3 rounded-lg mb-3">
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div>
+                                                    <label className="block text-[10px] text-zinc-400 uppercase mb-1">Target (100%)</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={targetActivations}
+                                                        onChange={(e) => setTargetActivations(parseFloat(e.target.value))}
+                                                        className="w-full bg-transparent border-b border-zinc-600 text-white font-bold outline-none"
+                                                    />
+                                                </div>
+                                                <div className="text-right">
+                                                    <label className="block text-[10px] text-emerald-400 uppercase mb-1">Max Payout (125%)</label>
+                                                    <div className="text-white font-bold border-b border-transparent">
+                                                        {Math.ceil(targetActivations * 1.25)} <span className="text-[10px] font-normal text-zinc-500">Acts</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex justify-between text-xs mb-2">
+                                            <span className="text-zinc-400">Attainment %</span>
+                                            <span className="font-bold text-white">{(results.bonus.attainmentPct * 100).toFixed(1)}%</span>
+                                        </div>
+                                        {/* Progress Bar with Striped Effect - Scaled to 125% */}
+                                        <div className="w-full bg-zinc-700 h-2 rounded-full overflow-hidden">
+                                            <div 
+                                                className="bg-magenta progress-bar-striped h-full transition-all duration-500" 
+                                                style={{ width: `${Math.min((results.bonus.attainmentPct / 1.25) * 100, 100)}%` }}
+                                            ></div>
+                                        </div>
+                                    </div>
+
+                                    {/* 3. Breakdown */}
+                                    <div className="border-t border-zinc-800 pt-4 space-y-2">
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-400">Base Spiff</span>
+                                            <span className="font-bold text-white">{formatCurrency(results.bonus.baseBonus)}</span>
+                                        </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-zinc-400">Target Accelerator</span>
+                                            <span className="font-bold text-emerald-400">+{formatCurrency(results.bonus.targetSpiff)}</span>
+                                        </div>
+                                    </div>
+
+                                    {/* 4. QA Deductions */}
+                                    <div className="bg-red-900/20 border border-red-900/50 p-4 rounded-lg">
+                                        <h4 className="text-[10px] font-bold text-red-400 uppercase mb-3">QA Deductions ($300 ea)</h4>
+                                        <div className="grid grid-cols-3 gap-2 text-center">
+                                            <div>
+                                                <label className="text-[9px] text-red-300 block mb-1">CSAT (&lt;8.3)</label>
+                                                <input 
+                                                    type="number" step="0.1"
+                                                    value={csatScore}
+                                                    onChange={(e) => setCsatScore(parseFloat(e.target.value))}
+                                                    className={`w-full bg-zinc-800 border ${csatScore < 8.3 ? 'border-red-500 text-red-400' : 'border-zinc-700 text-emerald-400'} rounded p-1 text-center text-xs font-bold`}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] text-red-300 block mb-1">M.Shop (&lt;70)</label>
+                                                <input 
+                                                    type="number"
+                                                    value={mysteryShopScore}
+                                                    onChange={(e) => setMysteryShopScore(parseFloat(e.target.value))}
+                                                    className={`w-full bg-zinc-800 border ${mysteryShopScore < 70 ? 'border-red-500 text-red-400' : 'border-zinc-700 text-emerald-400'} rounded p-1 text-center text-xs font-bold`}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[9px] text-red-300 block mb-1">Audit (&lt;70)</label>
+                                                <input 
+                                                    type="number"
+                                                    value={auditScore}
+                                                    onChange={(e) => setAuditScore(parseFloat(e.target.value))}
+                                                    className={`w-full bg-zinc-800 border ${auditScore < 70 ? 'border-red-500 text-red-400' : 'border-zinc-700 text-emerald-400'} rounded p-1 text-center text-xs font-bold`}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="text-right mt-2 text-red-400 font-bold text-sm">
+                                            -{formatCurrency(results.bonus.qaDeductions)}
+                                        </div>
+                                    </div>
+
+                                </div>
+                            </div>
+
+                        </div>
+                    )}
+                </div>
+
+                <footer className="mt-12 text-center text-zinc-400 text-xs pb-8 max-w-3xl mx-auto">
+                    <p className="leading-relaxed mb-4">
+                        <span className="font-bold text-zinc-500">Disclaimer:</span> This calculator provides an&nbsp;
+                        <strong>estimate</strong> of potential compensation based on the inputs provided and historical compensation factors.&nbsp;
+                        <strong>Actual earnings may vary</strong> and are subject to final audit, official compensation plans, and policy changes.&nbsp;
+                        This tool is for informational and planning purposes only and does not constitute a guarantee of income.
+                    </p>
+                    <p className="font-semibold text-zinc-500">
+                        Created by Ishwor Tuladhar
+                    </p>
+                </footer>
+
+              </div>
+            </div>
+          );
+        };
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
