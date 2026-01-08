@@ -1,0 +1,716 @@
+import React, { useState, useMemo } from 'react';
+import { 
+  DollarSign, 
+  TrendingUp, 
+  Users, 
+  Calculator, 
+  Award, 
+  AlertCircle, 
+  CheckCircle2, 
+  XCircle,
+  PiggyBank,
+  Target,
+  Store
+} from 'lucide-react';
+
+// --- Constants & Styles ---
+const METRO_MAGENTA = '#E20074';
+
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden ${className}`}>
+    {children}
+  </div>
+);
+
+// --- Helper Functions ---
+const formatCurrency = (val) => 
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val || 0);
+
+const formatNumber = (val) => 
+  new Intl.NumberFormat('en-US').format(val || 0);
+
+const displayPercentage = (val) => {
+  if (val === undefined || val === null || isNaN(val)) return '0';
+  return (val * 100).toFixed(1).replace(/\.0$/, '');
+};
+
+const App = () => {
+  // --- 1. STATE ---
+  const [viewMode, setViewMode] = useState('guideline'); // Default to 'guideline' for more detail
+  const [storeAddress, setStoreAddress] = useState('123 Metro Way');
+  const [exitTraffic, setExitTraffic] = useState(2565);
+  const [isHighCostMarket, setIsHighCostMarket] = useState(false);
+  
+  // Jan 2026 Bonus State
+  const [targetActivations, setTargetActivations] = useState(100);
+  const [retentionRate, setRetentionRate] = useState(58.0);
+  const [csatScore, setCsatScore] = useState(9.0);
+  const [mysteryShopScore, setMysteryShopScore] = useState(100);
+  const [auditScore, setAuditScore] = useState(100);
+
+  // Metrics State
+  const [metrics, setMetrics] = useState([
+    { name: "Phone Act", key: "phoneAct", targetRate: 0.050, actualRate: 0.034, mrc: 55, includeInTotal: true, type: 'activation' },
+    { name: "BTS Act (Excl HSI)", key: "btsAct", targetRate: 0.025, actualRate: 0.027, mrc: 20, includeInTotal: true, type: 'activation' },
+    { name: "HSI Conversion", key: "hsi", targetRate: 0.010, actualRate: 0.005, mrc: 55, includeInTotal: true, type: 'activation' },
+    { name: "Handset Upgrade", key: "upgrade", targetRate: 0.020, actualRate: 0.015, mrc: 60, includeInTotal: true, type: 'upgrade' }, 
+    { name: "Upgrade Residual (>365 Days)", key: "residual", targetRate: 0.015, actualRate: 0.010, mrc: 60, includeInTotal: true, type: 'residual' },
+    { name: "Gross Prepaid Act", key: "grossPrepaid", targetRate: 0.085, actualRate: 0.066, mrc: 0, includeInTotal: false, type: 'aggregator' },
+  ]);
+
+  // --- 2. HANDLERS ---
+  const handleMetricChange = (index, field, value) => {
+    const newMetrics = [...metrics];
+    const parsedValue = parseFloat(value);
+    
+    // Safety check for NaN to prevent crashes
+    const safeValue = isNaN(parsedValue) ? 0 : parsedValue;
+
+    // If it's a rate field, convert percentage to decimal.
+    newMetrics[index][field] = (field.includes('Rate')) ? safeValue / 100 : safeValue;
+    setMetrics(newMetrics);
+  };
+
+  const handleNumericInput = (setter) => (e) => {
+    const val = parseFloat(e.target.value);
+    setter(isNaN(val) ? 0 : val);
+  };
+
+  // --- 3. CALCULATIONS ---
+  const results = useMemo(() => {
+    let totalActualActivations = 0;
+    let totalEstimatedComp = 0;
+    let totalPotentialComp = 0;
+    let totalRetentionPotential = 0;
+    
+    // Specific accumulators for Gross Prepaid Act
+    let grossPrepaidComp = 0;
+    let grossPrepaidRetention = 0;
+
+    // Track upgrade acts to pass to residual
+    let upgradeActs = 0;
+    let upgradeTargetActs = 0;
+
+    const computedMetrics = metrics.map(m => {
+      const traffic = exitTraffic || 0;
+      
+      // --- GROSS PREPAID LOGIC (Aggregator Row) ---
+      if (m.key === 'grossPrepaid') {
+         const actualActs = totalActualActivations;
+         const actualRate = traffic > 0 ? actualActs / traffic : 0;
+         const targetRate = m.targetRate; 
+         const estComp = grossPrepaidComp;
+         const retentionComp = grossPrepaidRetention;
+         
+         return { ...m, actualActs, actualRate, targetRate, estComp, retentionComp, potComp: 0 };
+      }
+
+      // --- STANDARD METRIC LOGIC ---
+      let actualActs = (m.actualRate || 0) * traffic;
+      let targetActs = (m.targetRate || 0) * traffic;
+
+      // Capture Upgrade Stats for use in Residual
+      if (m.key === 'upgrade') {
+        upgradeActs = actualActs;
+        upgradeTargetActs = targetActs;
+      }
+
+      // Override Residual Stats to match Upgrade
+      if (m.key === 'residual') {
+        actualActs = upgradeActs;
+        targetActs = upgradeTargetActs;
+      }
+      
+      let estComp = 0;
+      let retentionComp = 0;
+      let potComp = 0;
+
+      if (viewMode === 'simple') {
+        estComp = actualActs * m.mrc;
+        potComp = targetActs * m.mrc;
+      } else {
+        // Guideline Mode Logic
+        if (m.type === 'activation') {
+          const marketSpiff = isHighCostMarket ? 3.00 : 0;
+          const upfrontRate = 0.35;
+          const upfrontPayout = (m.mrc * upfrontRate) + marketSpiff;
+          
+          estComp = actualActs * upfrontPayout;
+          const retentionRateTotal = 2.65; 
+          retentionComp = actualActs * (m.mrc * retentionRateTotal);
+          potComp = targetActs * (upfrontPayout + (m.mrc * retentionRateTotal));
+        
+        } else if (m.type === 'upgrade') {
+          const upfrontPayout = m.mrc * 1.00;
+          estComp = actualActs * upfrontPayout;
+          retentionComp = 0;
+          potComp = targetActs * upfrontPayout;
+
+        } else if (m.type === 'residual') {
+          const residualTotalRate = 0.03 * 23; // 69% total
+          // Residual has no upfront, only deferred based on acts derived from upgrades
+          estComp = 0; 
+          retentionComp = actualActs * (m.mrc * residualTotalRate);
+          potComp = targetActs * (m.mrc * residualTotalRate);
+        }
+      }
+
+      if (m.includeInTotal) {
+        totalEstimatedComp += estComp;
+        totalRetentionPotential += retentionComp;
+        totalPotentialComp += potComp;
+
+        if (m.type === 'activation') {
+          totalActualActivations += actualActs;
+          grossPrepaidComp += estComp;
+          grossPrepaidRetention += retentionComp;
+        }
+      }
+
+      return { ...m, actualActs, targetActs, estComp, retentionComp, potComp };
+    });
+
+    // --- BONUS LOGIC ---
+    const minActsRequired = 40; 
+    const minRetentionRequired = 57.0;
+    const attainmentPct = targetActivations > 0 ? (totalActualActivations / targetActivations) : 0;
+    
+    const actsMet = totalActualActivations >= minActsRequired;
+    const retentionMet = retentionRate >= minRetentionRequired;
+
+    let baseBonus = 0;
+    let targetSpiff = 0;
+    let bonusEligibilityStatus = "Ineligible"; 
+
+    if (actsMet) {
+      if (retentionMet) {
+        bonusEligibilityStatus = "Eligible";
+        if (attainmentPct >= 0.75) {
+          const clampedAttainment = Math.min(attainmentPct, 1.25);
+          baseBonus = clampedAttainment * 1875.00;
+        }
+        if (attainmentPct >= 1.05) {
+          const acceleratorCap = 1.25; 
+          const effectivePct = Math.min(attainmentPct, acceleratorCap);
+          const units = Math.floor((effectivePct - 1.0001) / 0.05); 
+          if (units > 0) targetSpiff = units * 250;
+        }
+      } else {
+        bonusEligibilityStatus = "Partial"; 
+        if (attainmentPct >= 1.00) baseBonus = 937.50;
+        else if (attainmentPct >= 0.75) baseBonus = 703.12;
+      }
+    } 
+
+    let qaDeductions = 0;
+    if (csatScore < 8.3) qaDeductions += 300;
+    if (mysteryShopScore < 70) qaDeductions += 300;
+    if (auditScore < 70) qaDeductions += 300;
+
+    const rawNetBonus = (baseBonus + targetSpiff) - qaDeductions;
+    // If in Guideline mode, bonus is excluded from the main table total, but we still calculate it for display
+    const netBonus = viewMode === 'guideline' ? 0 : rawNetBonus;
+    
+    return {
+      computedMetrics,
+      totalActualActivations,
+      totalEstimatedComp,
+      totalRetentionPotential,
+      totalPotentialComp,
+      bonus: {
+        status: bonusEligibilityStatus,
+        displayEligible: bonusEligibilityStatus !== "Ineligible" && rawNetBonus !== 0,
+        attainmentPct,
+        baseBonus,
+        targetSpiff,
+        qaDeductions,
+        netBonus, 
+        rawNetBonus 
+      }
+    };
+  }, [metrics, exitTraffic, targetActivations, retentionRate, csatScore, mysteryShopScore, auditScore, viewMode, isHighCostMarket]);
+
+  // Helper to determine traffic level for UI highlighting
+  const trafficLevel = useMemo(() => {
+    if (exitTraffic < 2000) return 'low';
+    if (exitTraffic < 3500) return 'avg';
+    return 'high';
+  }, [exitTraffic]);
+
+  return (
+    <div className="min-h-screen bg-zinc-50 text-zinc-800 font-sans pb-20">
+      
+      {/* --- HEADER --- */}
+      <div className="bg-zinc-900 pt-8 pb-20 px-4 md:px-8">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
+          <div className="text-center md:text-left">
+            <h1 className="text-3xl md:text-4xl font-black text-white uppercase tracking-tight flex items-center gap-3">
+              <span className="text-[#E20074]">Compensation</span> Calculator
+            </h1>
+            <p className="text-zinc-400 font-medium mt-1">Dealer Compensation Tool &bull; Jan 2026</p>
+          </div>
+          
+          {/* View Toggles */}
+          <div className="bg-zinc-800 p-1 rounded-lg flex">
+            <button 
+              onClick={() => setViewMode('simple')}
+              className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${viewMode === 'simple' ? 'bg-[#E20074] text-white shadow-lg' : 'text-zinc-400 hover:bg-zinc-700'}`}
+            >
+              Simple View
+            </button>
+            <button 
+              onClick={() => setViewMode('guideline')}
+              className={`px-4 py-2 rounded-md text-sm font-bold transition-all ${viewMode === 'guideline' ? 'bg-[#E20074] text-white shadow-lg' : 'text-zinc-400 hover:bg-zinc-700'}`}
+            >
+              Guideline Detail
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 md:px-8 -mt-10">
+        
+        {/* --- 1. EXIT TRAFFIC CONTROL (The "Huge Deal") --- */}
+        <Card className="mb-8 border-t-4 border-t-[#E20074] shadow-xl">
+          <div className="p-6 md:p-8">
+            <div className="flex flex-col md:flex-row gap-8 items-center">
+              
+              {/* Left: Store Info */}
+              <div className="w-full md:w-1/3 space-y-4">
+                <div className="flex items-center gap-2 text-[#E20074] font-bold uppercase tracking-wider text-xs">
+                  <Store className="w-4 h-4" /> Store Details
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 mb-1">Store Address / ID</label>
+                  <input 
+                    type="text" 
+                    value={storeAddress} 
+                    onChange={(e) => setStoreAddress(e.target.value)}
+                    className="w-full border-b-2 border-zinc-200 bg-transparent py-2 text-lg font-bold text-zinc-800 focus:border-[#E20074] outline-none transition-colors"
+                  />
+                </div>
+                {viewMode === 'guideline' && (
+                  <div className="flex items-center gap-3 bg-zinc-50 p-3 rounded-lg border border-zinc-100">
+                    <input 
+                      type="checkbox" 
+                      id="highCost"
+                      checked={isHighCostMarket}
+                      onChange={(e) => setIsHighCostMarket(e.target.checked)}
+                      className="w-5 h-5 accent-[#E20074] rounded cursor-pointer"
+                    />
+                    <label htmlFor="highCost" className="text-sm font-medium text-zinc-600 cursor-pointer">
+                      High Cost Market (+$3.00 Spiff)
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: The Traffic Slider */}
+              <div className="w-full md:w-2/3 bg-zinc-50 rounded-xl p-6 border border-zinc-100">
+                <div className="flex justify-between items-end mb-4">
+                  <div>
+                    <h2 className="text-lg font-black text-zinc-800 flex items-center gap-2">
+                      <Users className="w-5 h-5 text-[#E20074]" /> Exit Traffic Volume
+                    </h2>
+                    <p className="text-xs text-zinc-500 mt-1">Adjust traffic to simulate revenue potential</p>
+                  </div>
+                  <div className="text-right">
+                    <input 
+                      type="number" 
+                      value={exitTraffic}
+                      onChange={handleNumericInput(setExitTraffic)}
+                      className="text-4xl font-black text-[#E20074] w-48 text-right bg-transparent outline-none border-b-2 border-transparent hover:border-zinc-200 focus:border-[#E20074] transition-all"
+                    />
+                    <span className="text-xs font-bold text-zinc-400 block uppercase">Visitors</span>
+                  </div>
+                </div>
+                
+                <input 
+                  type="range" 
+                  min="500" 
+                  max="5000" 
+                  step="5"
+                  value={exitTraffic || 0}
+                  onChange={handleNumericInput(setExitTraffic)}
+                  className="w-full h-3 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-[#E20074] hover:accent-pink-600 transition-all mb-4"
+                />
+                
+                {viewMode !== 'simple' && (
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div 
+                      onClick={() => setExitTraffic(1500)}
+                      className={`p-2 rounded shadow-sm border cursor-pointer transition-all ${trafficLevel === 'low' ? 'bg-pink-50 border-[#E20074] ring-1 ring-[#E20074]' : 'bg-white border-zinc-100 hover:border-pink-200'}`}
+                    >
+                      <p className={`text-[10px] uppercase font-bold ${trafficLevel === 'low' ? 'text-[#E20074]' : 'text-zinc-400'}`}>Low Traffic</p>
+                      <div className={`text-sm font-bold ${trafficLevel === 'low' ? 'text-[#E20074]' : 'text-zinc-600'}`}>1,500</div>
+                    </div>
+                    <div 
+                      onClick={() => setExitTraffic(2565)}
+                      className={`p-2 rounded shadow-sm border cursor-pointer transition-all ${trafficLevel === 'avg' ? 'bg-pink-50 border-[#E20074] ring-1 ring-[#E20074]' : 'bg-white border-zinc-100 hover:border-pink-200'}`}
+                    >
+                      <p className={`text-[10px] uppercase font-bold ${trafficLevel === 'avg' ? 'text-[#E20074]' : 'text-zinc-400'}`}>Avg Traffic</p>
+                      <div className={`text-sm font-bold ${trafficLevel === 'avg' ? 'text-[#E20074]' : 'text-zinc-600'}`}>2,565</div>
+                    </div>
+                    <div 
+                      onClick={() => setExitTraffic(4000)}
+                      className={`p-2 rounded shadow-sm border cursor-pointer transition-all ${trafficLevel === 'high' ? 'bg-pink-50 border-[#E20074] ring-1 ring-[#E20074]' : 'bg-white border-zinc-100 hover:border-pink-200'}`}
+                    >
+                      <p className={`text-[10px] uppercase font-bold ${trafficLevel === 'high' ? 'text-[#E20074]' : 'text-zinc-400'}`}>High Traffic</p>
+                      <div className={`text-sm font-bold ${trafficLevel === 'high' ? 'text-[#E20074]' : 'text-zinc-600'}`}>4,000</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+        </Card>
+
+        {/* --- 2. SUMMARY DASHBOARD --- */}
+        <div className={`grid grid-cols-1 md:grid-cols-2 ${viewMode === 'simple' ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-6 mb-8`}>
+          
+          {/* Card 1: Upfront Payout */}
+          <Card className="p-6 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+              <DollarSign className="w-16 h-16 text-emerald-600" />
+            </div>
+            <p className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
+              {viewMode === 'simple' ? 'Total Payout' : 'Est. Upfront Payout'}
+            </p>
+            <div className="text-3xl font-black text-emerald-600 truncate">
+               {formatCurrency(results.totalEstimatedComp + results.bonus.netBonus)}
+            </div>
+            <div className="mt-2 text-xs font-medium text-emerald-800 bg-emerald-100 px-2 py-1 rounded inline-block">
+               Includes Activations & Upgrades
+            </div>
+          </Card>
+
+          {/* Card 2: Deferred/Retention (Guideline Mode Only) or Gap (Simple) */}
+          {viewMode === 'guideline' ? (
+             <Card className="p-6 relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <PiggyBank className="w-16 h-16 text-blue-600" />
+              </div>
+              <p className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
+                Deferred Earnings
+              </p>
+              <div className="text-3xl font-black text-blue-600 truncate">
+                {formatCurrency(results.totalRetentionPotential)}
+              </div>
+              <div className="mt-2 text-xs font-medium text-blue-800 bg-blue-100 px-2 py-1 rounded inline-block">
+                12-Mo Retention & Residuals
+              </div>
+            </Card>
+          ) : (
+            <Card className="p-6 relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <Target className="w-16 h-16 text-[#E20074]" />
+              </div>
+              <p className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
+                Opportunity Gap
+              </p>
+              <div className="text-3xl font-black text-[#E20074] truncate">
+                {formatCurrency((results.totalPotentialComp || 0) - ((results.totalEstimatedComp || 0) + (results.totalRetentionPotential || 0)))}
+              </div>
+              <div className="mt-2 text-xs font-medium text-pink-800 bg-pink-100 px-2 py-1 rounded inline-block">
+                Missed Commission
+              </div>
+            </Card>
+          )}
+
+          {/* Card 3: Bonus Status (HIDDEN IN GUIDELINE MODE) */}
+          {viewMode === 'simple' && (
+            <Card className={`p-6 relative overflow-hidden group border-b-4 ${results.bonus.rawNetBonus < 0 ? 'border-red-500' : 'border-amber-400'}`}>
+              <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <Award className="w-16 h-16 text-amber-600" />
+              </div>
+              <p className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
+                Performance Bonus
+              </p>
+              <div className={`text-3xl font-black truncate ${results.bonus.rawNetBonus < 0 ? 'text-red-500' : 'text-zinc-800'}`}>
+                  {formatCurrency(results.bonus.rawNetBonus)}
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                  <div className={`text-[10px] font-bold uppercase px-2 py-1 rounded border
+                    ${results.bonus.displayEligible 
+                      ? (results.bonus.status === 'Partial' ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-emerald-50 text-emerald-600 border-emerald-200') 
+                      : 'bg-zinc-100 text-zinc-400 border-zinc-200'}`}>
+                    {results.bonus.status}
+                  </div>
+                  <span className="text-xs text-zinc-400">
+                    {results.bonus.displayEligible ? `${(results.bonus.attainmentPct * 100).toFixed(0)}% to Target` : 'Requirements Not Met'}
+                  </span>
+              </div>
+            </Card>
+          )}
+
+          {/* Card 4: Total Value */}
+          <Card className="p-6 bg-zinc-900 text-white relative overflow-hidden">
+             <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-[#E20074] rounded-full blur-3xl opacity-20"></div>
+             <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2">
+               Total Opportunity Value
+             </p>
+             <div className="text-3xl font-black truncate text-white">
+                {formatCurrency(results.totalEstimatedComp + results.totalRetentionPotential + results.bonus.netBonus)}
+             </div>
+             <p className="text-xs text-zinc-400 mt-2">
+               {viewMode === 'simple' ? 'Upfront + Deferred + Bonus' : 'Upfront + 12-Mo Deferred'}
+             </p>
+          </Card>
+        </div>
+
+        {/* --- 3. MAIN DATA GRID --- */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          {/* LEFT: METRICS TABLE */}
+          <div className={`${viewMode === 'simple' ? 'lg:col-span-2' : 'lg:col-span-3'} space-y-6`}>
+            <Card>
+              <div className="px-6 py-4 border-b border-zinc-100 bg-zinc-50 flex justify-between items-center">
+                <h3 className="font-bold text-zinc-700 flex items-center gap-2">
+                  <Calculator className="w-5 h-5 text-[#E20074]" />
+                  Commission Breakdown
+                </h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="text-xs text-zinc-500 uppercase bg-zinc-50/50 border-b border-zinc-200">
+                    <tr>
+                      <th className="px-4 py-3 font-bold">Metric</th>
+                      <th className="px-2 py-3 text-center">Conv %</th>
+                      <th className="px-2 py-3 text-center bg-zinc-100/50">Est. Acts</th>
+                      {viewMode === 'simple' ? (
+                        <>
+                           <th className="px-2 py-3 text-center">Target %</th>
+                           <th className="px-2 py-3 text-center">MRC/Rate</th>
+                           <th className="px-4 py-3 text-right">Payout</th>
+                        </>
+                      ) : (
+                        <>
+                           <th className="px-2 py-3 text-center">Avg Plan</th>
+                           <th className="px-2 py-3 text-center text-emerald-700">Upfront (35%)</th>
+                           <th className="px-2 py-3 text-center text-blue-700">Deferred (265%)</th>
+                           <th className="px-4 py-3 text-right font-bold">Total</th>
+                        </>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {results.computedMetrics.map((m, i) => {
+                      // Hide Upgrades in simple mode to keep it "Simple"
+                      if (viewMode === 'simple' && (m.type === 'upgrade' || m.type === 'residual')) return null;
+
+                      const isTotalRow = m.key === 'grossPrepaid';
+                      return (
+                        <tr key={m.key} className={`${isTotalRow ? 'bg-pink-50/30 font-semibold' : 'hover:bg-zinc-50'}`}>
+                          <td className="px-4 py-3">
+                            <span className={`block ${isTotalRow ? 'text-[#E20074]' : 'text-zinc-700'}`}>{m.name}</span>
+                            {m.type === 'residual' && <span className="text-[10px] text-zinc-400 block">Upto 23 Months 3% Residual</span>}
+                          </td>
+                          <td className="px-2 py-3 text-center">
+                            <div className="relative">
+                               {m.key === 'residual' ? null : (
+                                 <input 
+                                  type="number" step="0.1"
+                                  disabled={isTotalRow}
+                                  value={displayPercentage(m.actualRate)}
+                                  onChange={(e) => handleMetricChange(i, 'actualRate', e.target.value)}
+                                  className={`w-16 text-center rounded py-1 px-1 font-bold text-zinc-700 outline-none focus:ring-2 focus:ring-[#E20074] ${isTotalRow ? 'bg-transparent' : 'bg-white border border-zinc-200'}`}
+                                />
+                               )}
+                              {!isTotalRow && m.key !== 'residual' && <span className="absolute right-1 top-1.5 text-[10px] text-zinc-400">%</span>}
+                            </div>
+                          </td>
+                          <td className="px-2 py-3 text-center bg-zinc-50/50 font-bold text-zinc-800">
+                             {m.key === 'residual' ? null : Math.round(m.actualActs)}
+                          </td>
+                          
+                          {viewMode === 'simple' ? (
+                             <>
+                              <td className="px-2 py-3 text-center">
+                                <input 
+                                  type="number" step="0.1"
+                                  disabled={isTotalRow}
+                                  value={displayPercentage(m.targetRate)}
+                                  onChange={(e) => handleMetricChange(i, 'targetRate', e.target.value)}
+                                  className={`w-14 text-center text-zinc-500 bg-transparent border-b border-zinc-200 focus:border-[#E20074] outline-none text-xs`}
+                                />
+                              </td>
+                              <td className="px-2 py-3 text-center">
+                                {!isTotalRow && (
+                                  <input 
+                                    type="number"
+                                    value={m.mrc || 0}
+                                    onChange={(e) => handleMetricChange(i, 'mrc', e.target.value)}
+                                    className="w-12 text-center bg-transparent text-zinc-600 outline-none border-b border-zinc-200 focus:border-[#E20074]"
+                                  />
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right font-bold text-emerald-600">
+                                {formatCurrency(m.estComp)}
+                              </td>
+                             </>
+                          ) : (
+                             <>
+                              <td className="px-2 py-3 text-center">
+                                {!isTotalRow && m.type !== 'residual' && (
+                                  <input 
+                                    type="number"
+                                    value={m.mrc || 0}
+                                    onChange={(e) => handleMetricChange(i, 'mrc', e.target.value)}
+                                    className="w-14 text-center bg-white border border-zinc-200 rounded py-1 text-sm font-medium text-zinc-700 focus:ring-2 focus:ring-[#E20074] outline-none"
+                                  />
+                                )}
+                              </td>
+                              <td className="px-2 py-3 text-center text-emerald-600 font-medium">
+                                {formatCurrency(m.estComp)}
+                              </td>
+                              <td className="px-2 py-3 text-center text-blue-600 font-medium">
+                                {formatCurrency(m.retentionComp)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-black text-zinc-800">
+                                {formatCurrency(m.estComp + m.retentionComp)}
+                              </td>
+                             </>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="p-4 bg-zinc-50 text-xs text-zinc-500 text-center border-t border-zinc-200">
+                Calculations based on January 2026 Dealer Compensation Guidelines.
+              </div>
+            </Card>
+          </div>
+
+          {/* RIGHT: BONUS & QA PANEL (HIDDEN IN GUIDELINE MODE) */}
+          {viewMode === 'simple' && (
+            <div className="space-y-6">
+              <Card className="border-t-4 border-t-amber-400">
+                <div className="p-6">
+                  <div className="flex justify-between items-start mb-6">
+                    <div>
+                      <h3 className="font-bold text-zinc-800 flex items-center gap-2">
+                        <Award className="w-5 h-5 text-amber-500" /> Performance Bonus
+                      </h3>
+                      <p className="text-xs text-zinc-400 mt-1">Target vs. Actuals</p>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-2xl font-black text-zinc-800">{(results.bonus.attainmentPct * 100).toFixed(1)}%</div>
+                      <div className="text-[10px] font-bold uppercase text-zinc-400">Attainment</div>
+                    </div>
+                  </div>
+
+                  {/* Progress Bar */}
+                  <div className="relative h-4 bg-zinc-100 rounded-full mb-6 overflow-hidden">
+                    <div 
+                        className="absolute top-0 left-0 h-full bg-gradient-to-r from-amber-400 to-orange-500 transition-all duration-500"
+                        style={{ width: `${Math.min((results.bonus.attainmentPct / 1.25) * 100, 100)}%` }}
+                    />
+                    <div className="absolute top-0 left-[80%] h-full border-l-2 border-white/50 z-10"></div> {/* 100% Marker (80% of 125) */}
+                  </div>
+
+                  <div className="space-y-4">
+                    {/* Gatekeepers */}
+                    <div className="bg-zinc-50 p-3 rounded-lg border border-zinc-100">
+                      <h4 className="text-[10px] font-bold text-zinc-400 uppercase mb-2">Gatekeepers</h4>
+                      <div className="flex justify-between items-center text-sm mb-2">
+                        <span className="text-zinc-600">Net Activations (Min 40)</span>
+                        <span className={`font-bold flex items-center gap-1 ${results.totalActualActivations >= 40 ? 'text-emerald-600' : 'text-red-500'}`}>
+                          {Math.round(results.totalActualActivations)} 
+                          {results.totalActualActivations >= 40 ? <CheckCircle2 className="w-3 h-3"/> : <XCircle className="w-3 h-3"/>}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-zinc-600">95-Day Retention (Min 57%)</span>
+                        <div className="flex items-center gap-2">
+                          <input 
+                            type="number"
+                            value={retentionRate}
+                            onChange={handleNumericInput(setRetentionRate)}
+                            className={`w-14 text-right bg-white border rounded px-1 text-sm font-bold outline-none focus:border-[#E20074] ${retentionRate >= 57 ? 'border-zinc-200 text-emerald-600' : 'border-red-200 text-red-500'}`}
+                          />
+                          {retentionRate >= 57 ? <CheckCircle2 className="w-3 h-3 text-emerald-600"/> : <XCircle className="w-3 h-3 text-red-500"/>}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Target Input */}
+                    <div className="flex justify-between items-center">
+                      <label className="text-sm font-medium text-zinc-600">Activation Target:</label>
+                      <input 
+                        type="number"
+                        value={targetActivations}
+                        onChange={handleNumericInput(setTargetActivations)}
+                        className="w-20 text-right font-bold text-zinc-800 bg-white border-b-2 border-zinc-200 focus:border-[#E20074] outline-none"
+                      />
+                    </div>
+
+                    {/* Breakdown */}
+                    <div className="border-t border-zinc-100 pt-4 space-y-2">
+                      <div className="flex justify-between text-sm">
+                          <span className="text-zinc-500">Base Bonus</span>
+                          <span className="font-bold text-zinc-800">{formatCurrency(results.bonus.baseBonus)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                          <span className="text-zinc-500">Accelerators</span>
+                          <span className="font-bold text-emerald-600">+{formatCurrency(results.bonus.targetSpiff)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Card>
+
+              {/* QA Deductions */}
+              <Card className="border-t-4 border-t-red-400">
+                <div className="p-6">
+                    <h3 className="font-bold text-zinc-800 flex items-center gap-2 mb-4">
+                      <AlertCircle className="w-5 h-5 text-red-500" /> QA Deductions
+                    </h3>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="text-center">
+                          <label className="block text-[10px] font-bold text-zinc-400 mb-1">CSAT (&lt;8.3)</label>
+                          <input 
+                            type="number" step="0.1"
+                            value={csatScore}
+                            onChange={handleNumericInput(setCsatScore)}
+                            className={`w-full text-center border rounded py-1 font-bold ${csatScore < 8.3 ? 'bg-red-50 border-red-300 text-red-600' : 'bg-white border-zinc-200 text-zinc-700'}`}
+                          />
+                      </div>
+                      <div className="text-center">
+                          <label className="block text-[10px] font-bold text-zinc-400 mb-1">M.Shop (&lt;70)</label>
+                          <input 
+                            type="number"
+                            value={mysteryShopScore}
+                            onChange={handleNumericInput(setMysteryShopScore)}
+                            className={`w-full text-center border rounded py-1 font-bold ${mysteryShopScore < 70 ? 'bg-red-50 border-red-300 text-red-600' : 'bg-white border-zinc-200 text-zinc-700'}`}
+                          />
+                      </div>
+                      <div className="text-center">
+                          <label className="block text-[10px] font-bold text-zinc-400 mb-1">Audit (&lt;70)</label>
+                          <input 
+                            type="number"
+                            value={auditScore}
+                            onChange={handleNumericInput(setAuditScore)}
+                            className={`w-full text-center border rounded py-1 font-bold ${auditScore < 70 ? 'bg-red-50 border-red-300 text-red-600' : 'bg-white border-zinc-200 text-zinc-700'}`}
+                          />
+                      </div>
+                    </div>
+                    {results.bonus.qaDeductions > 0 && (
+                      <div className="mt-4 pt-4 border-t border-red-100 text-right text-red-600 font-bold">
+                          -{formatCurrency(results.bonus.qaDeductions)}
+                      </div>
+                    )}
+                </div>
+              </Card>
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
